@@ -3,7 +3,7 @@ mod args;
 use args::TestContextArgs;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::Ident;
+use syn::{parse_macro_input, Block, Ident, Type};
 
 /// Macro to use on tests to add the setup/teardown functionality of your context.
 ///
@@ -131,6 +131,88 @@ fn handle_result(result_name: Ident) -> proc_macro2::TokenStream {
             Ok(value) => value,
             Err(err) => {
                 std::panic::resume_unwind(err);
+            }
+        }
+    }
+}
+
+#[proc_macro_attribute]
+pub fn test_context_rstest(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as TestContextArgs);
+    let input = syn::parse_macro_input!(item as syn::ItemFn);
+
+    let context_type = &args.context_type;
+    let skip_teardown = args.skip_teardown;
+    let name = &input.sig.ident;
+    let body = &input.block;
+    let attrs = &input.attrs;
+    let is_async = input.sig.asyncness.is_some();
+    let output = &input.sig.output;
+    let arguments = &input.sig.inputs;
+
+    if is_async {
+        let test_body = get_async_body(skip_teardown, context_type, body);
+        quote! {
+            #(#attrs)*
+            async fn #name(#arguments) #output {
+                #test_body
+            }
+        }
+    } else {
+        let test_body = get_sync_body(skip_teardown, context_type, body);
+        quote! {
+            #(#attrs)*
+            fn #name(#arguments) #output {
+                #test_body
+            }
+        }
+    }
+    .into()
+}
+
+fn get_sync_body(
+    skip_teardown: bool,
+    context_type: &Type,
+    body: &Block,
+) -> proc_macro2::TokenStream {
+    if skip_teardown {
+        quote! {
+            let ctx = <#context_type as test_context::TestContext>::setup();
+            #body
+        }
+    } else {
+        quote! {
+            let mut ctx = <#context_type as test_context::TestContext>::setup();
+            let result = std::panic::catch_unwind(|| #body);
+            <#context_type as test_context::TestContext>::teardown(ctx);
+            match result {
+                Ok(r) => r,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
+    }
+}
+
+fn get_async_body(
+    skip_teardown: bool,
+    context_type: &Type,
+    body: &Block,
+) -> proc_macro2::TokenStream {
+    if skip_teardown {
+        quote! {
+            let ctx = <#context_type as test_context::AsyncTestContext>::setup().await;
+            #body
+        }
+    } else {
+        quote! {
+            use ::test_context::futures::FutureExt;
+
+            let mut ctx = <#context_type as test_context::AsyncTestContext>::setup().await;
+            let result = std::panic::AssertUnwindSafe(async { #body }).catch_unwind().await;
+            <#context_type as test_context::AsyncTestContext>::teardown(ctx).await;
+            match result {
+                Ok(r) => r,
+                Err(e) => std::panic::resume_unwind(e),
             }
         }
     }

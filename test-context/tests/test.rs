@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
+use rstest::rstest;
+use test_context::futures::FutureExt;
 use test_context::{test_context, AsyncTestContext, TestContext};
-
+use test_context_macros::test_context_rstest;
 struct Context {
     n: u32,
 }
@@ -211,4 +213,29 @@ fn test_generic_with_string(ctx: &mut GenericContext<String>) {
 #[tokio::test]
 async fn test_async_generic(ctx: &mut GenericContext<u64>) {
     assert_eq!(ctx.contents, 1);
+}
+
+struct MyContext {
+    n: u32,
+}
+
+impl AsyncTestContext for MyContext {
+    async fn setup() -> Self {
+        println!("Create this shit!");
+        MyContext { n: 42 }
+    }
+    async fn teardown(self) -> () {
+        println!("Drop this shit!");
+        drop(self);
+    }
+}
+
+#[test_context_rstest(MyContext)]
+#[rstest]
+#[case("Hello world!")]
+// #[case(test_context_macros)]
+#[tokio::test]
+async fn test_rstest_with(#[case] value: String) {
+    // println!("{}", test_context_macros.n);
+    println!("{}", "value");
 }
